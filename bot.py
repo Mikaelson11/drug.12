@@ -307,7 +307,7 @@ async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_00
     else:
         msg = (f"✅ Logged, but I couldn't post in a `#{LOG_CHANNEL_NAME}` channel. Create one and give me "
                f"permission to send messages there.{warn}")
-    await i.followup.send(msg, ephemeral=True)
+    await i.followup.send(msg, embed=e, ephemeral=True)
 
 
 # ------------------------------------------------------------------ /leaderboard

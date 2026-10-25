@@ -25,14 +25,16 @@ LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")  # optional: force a specific chann
 #   RATES   = {drug: {level: (min price per bag, max price per bag)}}
 #   RECIPES = {drug: (buds per joint, joints per bag)}
 RATES = {
-    "weed": {1: (648, 852), 10: (780, 1006)},
+    "weed": {1: (648, 852), 10: (780, 1006), 20: (924, 1176)},
 }
 RECIPES = {
     "weed": (1, 2),
 }
 WASH_FEE = 0.20          # dirty money lost when washing
 WASH_FEE_SKILL = 0.16    # ...with the wash skill
-MAX_LEVEL = 10           # levels shown in the dropdown (Discord max 25)
+DEFAULT_BONUS = 40       # sale bonus % everyone starts with (gang block)
+DEFAULT_WASH_SKILL = True  # everyone starts with the (upgraded) wash skill
+LEVELS = (1, 10, 20, 35)  # levels shown in the dropdowns (Discord max 25)
 
 # ------------------------------------------------------------------ database
 db = sqlite3.connect(DB_PATH)
@@ -100,7 +102,7 @@ def fee_for(skill: bool) -> float:
 def get_settings(guild_id: int, user_id: int):
     r = db.execute("SELECT bonus, wash_skill, level FROM user_settings WHERE guild_id=? AND user_id=?",
                    (guild_id, user_id)).fetchone()
-    return (r["bonus"], bool(r["wash_skill"]), r["level"]) if r else (0.0, False, None)
+    return (r["bonus"], bool(r["wash_skill"]), r["level"]) if r else (float(DEFAULT_BONUS), DEFAULT_WASH_SKILL, None)
 
 
 def save_settings(guild_id: int, user_id: int, bonus: float, skill: bool, level):
@@ -112,7 +114,7 @@ def save_settings(guild_id: int, user_id: int, bonus: float, skill: bool, level)
 
 
 DRUG_CHOICES = [app_commands.Choice(name=d.title(), value=d) for d in RATES]
-LEVEL_CHOICES = [app_commands.Choice(name=f"Level {n}", value=n) for n in range(1, MAX_LEVEL + 1)]
+LEVEL_CHOICES = [app_commands.Choice(name=f"Level {n}", value=n) for n in LEVELS]
 BONUS_CHOICES = [app_commands.Choice(name="No bonus" if n == 0 else f"+{n}% bonus", value=n)
                  for n in (0, 5, 10, 15, 20, 25, 30, 40, 50)]
 PERIODS = [app_commands.Choice(name=n, value=v) for n, v in
@@ -206,7 +208,7 @@ async def plan(i: discord.Interaction,
         f"Wash lost: {money(d_avg - c_avg)} avg"))
     e.set_footer(text=(
         f"Per bag: {money(lo * mult)}–{money(hi * mult)} (base {money(lo)}–{money(hi)}) • "
-        f"bonus {b:g}% • wash fee {fee * 100:g}%" + (" • level price is an estimate" if est else "")))
+        f"bonus {b:g}% • wash fee {fee * 100:g}%" + (f" • no exact price set for L{lvl} yet, this is an estimate" if est else "")))
     await i.response.send_message(embed=e)
 
 
@@ -236,12 +238,13 @@ async def get_log_channel(guild: discord.Guild):
 @bot.tree.command(description="Log a sale. It's also posted in the sales-log channel")
 @app_commands.guild_only()
 @app_commands.choices(drug=DRUG_CHOICES, level=LEVEL_CHOICES)
-@app_commands.describe(bags="Bags sold", dirty="Total dirty money you received",
+@app_commands.describe(bags="Bags sold",
+                       dirty="Optional: exact dirty money you received (blank = average for your level and bonus)",
                        drug="Drug (default: weed)",
                        level="Level sold (default: the one saved in /settings)",
                        wash_skill="Override your saved wash skill", note="Buyer / location / anything")
 async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_000],
-               dirty: app_commands.Range[float, 0, 1_000_000_000],
+               dirty: app_commands.Range[float, 0, 1_000_000_000] | None = None,
                drug: app_commands.Choice[str] | None = None,
                level: app_commands.Choice[int] | None = None,
                wash_skill: bool | None = None, note: str | None = None):
@@ -254,6 +257,11 @@ async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_00
     await i.response.defer(ephemeral=True)
     drug_name = drug.value if drug is not None else next(iter(RATES))
     skill = s_skill if wash_skill is None else wash_skill
+    lo, hi, est = rate_for(drug_name, lvl)
+    mult = 1 + s_bonus / 100
+    estimated = dirty is None
+    if estimated:  # prices are a random range per bag, so use the average
+        dirty = (lo + hi) / 2 * mult * bags
     per_bag = dirty / bags
     clean = dirty * (1 - fee_for(skill))
 
@@ -264,9 +272,13 @@ async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_00
 
     e = discord.Embed(title="💰 Sale logged", color=0x2ecc71,
                       description=f"{i.user.mention} sold **{bags:,}× {drug_name.title()} L{lvl}**")
-    e.add_field(name="Dirty money", value=money(dirty))
+    e.add_field(name="Dirty money" + (" (avg estimate)" if estimated else ""), value=money(dirty))
     e.add_field(name="Per bag", value=money(per_bag))
     e.add_field(name="Clean (after wash)", value=money(clean))
+    if estimated:
+        e.add_field(name="Possible range", inline=False,
+                    value=f"{money(lo * mult * bags)} – {money(hi * mult * bags)} dirty "
+                          f"({s_bonus:g}% bonus included)" + ("\nNo exact price set for this level yet" if est else ""))
     if note:
         e.add_field(name="Note", value=note, inline=False)
     e.timestamp = datetime.now(timezone.utc)
@@ -281,10 +293,11 @@ async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_00
             posted = None
 
     # sanity check against the known price range
-    lo, hi, _ = rate_for(drug_name, lvl)
-    top = hi * (1 + s_bonus / 100)
+    top = hi * mult
     warn = ""
-    if per_bag > top * 1.01:
+    if estimated:
+        pass
+    elif per_bag > top * 1.01:
         warn = f"\n⚠️ {money(per_bag)}/bag is above the max I'd expect ({money(top)}). Double-check the amount."
     elif per_bag < lo * 0.99:
         warn = f"\n⚠️ {money(per_bag)}/bag is below the usual minimum ({money(lo)}). Double-check the amount."
@@ -318,9 +331,25 @@ async def leaderboard(i: discord.Interaction, period: app_commands.Choice[str] |
     await i.response.send_message(embed=e)
 
 
+async def ensure_log_channel(guild: discord.Guild):
+    ch = await get_log_channel(guild)
+    if ch:
+        print(f"[{guild.name}] sales log channel: #{ch.name}")
+    else:
+        print(f"[{guild.name}] could not find or create #{LOG_CHANNEL_NAME} - "
+              f"give the bot the Manage Channels permission, or create the channel yourself")
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} ({datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC)")
+    for guild in bot.guilds:  # create #sales-log up front instead of waiting for the first /sell
+        await ensure_log_channel(guild)
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    await ensure_log_channel(guild)
 
 
 if __name__ == "__main__":

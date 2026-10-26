@@ -32,7 +32,8 @@ RECIPES = {
 }
 WASH_FEE = 0.20          # dirty money lost when washing
 WASH_FEE_SKILL = 0.16    # ...with the wash skill
-DEFAULT_BONUS = 40       # sale bonus % everyone starts with (gang block)
+SKILL_BONUS = 20         # drug selling skill: +% on every sale (same for everyone)
+GANG_BLOCK_BONUS = 10    # extra % added on top when selling on a gang block
 DEFAULT_WASH_SKILL = True  # everyone starts with the (upgraded) wash skill
 LEVELS = (1, 10, 20, 35)  # levels shown in the dropdowns (Discord max 25)
 
@@ -100,23 +101,29 @@ def fee_for(skill: bool) -> float:
 
 
 def get_settings(guild_id: int, user_id: int):
-    r = db.execute("SELECT bonus, wash_skill, level FROM user_settings WHERE guild_id=? AND user_id=?",
+    """(wash_skill, level). The old per-user bonus column is no longer used."""
+    r = db.execute("SELECT wash_skill, level FROM user_settings WHERE guild_id=? AND user_id=?",
                    (guild_id, user_id)).fetchone()
-    return (r["bonus"], bool(r["wash_skill"]), r["level"]) if r else (float(DEFAULT_BONUS), DEFAULT_WASH_SKILL, None)
+    return (bool(r["wash_skill"]), r["level"]) if r else (DEFAULT_WASH_SKILL, None)
 
 
-def save_settings(guild_id: int, user_id: int, bonus: float, skill: bool, level):
-    db.execute("INSERT INTO user_settings(guild_id,user_id,bonus,wash_skill,level) VALUES (?,?,?,?,?) "
-               "ON CONFLICT(guild_id,user_id) DO UPDATE SET bonus=excluded.bonus, "
-               "wash_skill=excluded.wash_skill, level=excluded.level",
-               (guild_id, user_id, bonus, int(skill), level))
+def save_settings(guild_id: int, user_id: int, skill: bool, level):
+    db.execute("INSERT INTO user_settings(guild_id,user_id,bonus,wash_skill,level) VALUES (?,?,0,?,?) "
+               "ON CONFLICT(guild_id,user_id) DO UPDATE SET wash_skill=excluded.wash_skill, "
+               "level=excluded.level",
+               (guild_id, user_id, int(skill), level))
     db.commit()
+
+
+def total_bonus(gang_block) -> int:
+    """Drug selling skill, plus the gang block bonus when selling on one."""
+    return SKILL_BONUS + (GANG_BLOCK_BONUS if gang_block is not None and gang_block.value else 0)
 
 
 DRUG_CHOICES = [app_commands.Choice(name=d.title(), value=d) for d in RATES]
 LEVEL_CHOICES = [app_commands.Choice(name=f"Level {n}", value=n) for n in LEVELS]
-BONUS_CHOICES = [app_commands.Choice(name="No bonus" if n == 0 else f"+{n}% bonus", value=n)
-                 for n in (0, 5, 10, 15, 20, 25, 30, 40, 50)]
+GANG_CHOICES = [app_commands.Choice(name=f"Yes - gang block (+{GANG_BLOCK_BONUS}%)", value=1),
+                app_commands.Choice(name="No - not a gang block", value=0)]
 PERIODS = [app_commands.Choice(name=n, value=v) for n, v in
            [("Today", "today"), ("Last 7 days", "week"),
             ("Last 30 days", "month"), ("All time", "all")]]
@@ -135,51 +142,53 @@ bot = Bot()
 
 
 # ------------------------------------------------------------------ /settings
-@bot.tree.command(description="Save YOUR level, sale bonus and wash skill (used by /plan and /sell)")
+@bot.tree.command(description="Save YOUR level and wash skill (used by /plan and /sell)")
 @app_commands.guild_only()
-@app_commands.choices(level=LEVEL_CHOICES, bonus=BONUS_CHOICES)
-@app_commands.describe(level="Your drug level", bonus="Bonus % on money per sale",
+@app_commands.choices(level=LEVEL_CHOICES)
+@app_commands.describe(level="Your drug level",
                        wash_skill="Do you have the wash skill? (16% fee instead of 20%)")
 async def settings(i: discord.Interaction, level: app_commands.Choice[int] | None = None,
-                   bonus: app_commands.Choice[int] | None = None, wash_skill: bool | None = None):
-    cur_bonus, cur_skill, cur_level = get_settings(i.guild_id, i.user.id)
-    new_bonus = cur_bonus if bonus is None else bonus.value
+                   wash_skill: bool | None = None):
+    cur_skill, cur_level = get_settings(i.guild_id, i.user.id)
     new_skill = cur_skill if wash_skill is None else wash_skill
     new_level = cur_level if level is None else level.value
-    save_settings(i.guild_id, i.user.id, new_bonus, new_skill, new_level)
+    save_settings(i.guild_id, i.user.id, new_skill, new_level)
     await i.response.send_message(
-        f"⚙️ Saved for {i.user.mention}: level **{new_level if new_level else 'not set'}**, sale bonus "
-        f"**{new_bonus:g}%**, wash skill **{'yes' if new_skill else 'no'}** "
-        f"(wash fee {fee_for(new_skill) * 100:g}%)", ephemeral=True)
+        f"⚙️ Saved for {i.user.mention}: level **{new_level if new_level else 'not set'}**, "
+        f"wash skill **{'yes' if new_skill else 'no'}** (wash fee {fee_for(new_skill) * 100:g}%). "
+        f"Your drug selling skill bonus is {SKILL_BONUS}%, plus {GANG_BLOCK_BONUS}% when you pick "
+        f"gang block in /plan or /sell.", ephemeral=True)
 
 
 # ------------------------------------------------------------------ /plan
 @bot.tree.command(description="Buds -> joints -> bags -> dirty & clean money calculator")
 @app_commands.guild_only()
-@app_commands.choices(drug=DRUG_CHOICES, level=LEVEL_CHOICES, bonus=BONUS_CHOICES)
+@app_commands.choices(drug=DRUG_CHOICES, level=LEVEL_CHOICES, gang_block=GANG_CHOICES)
 @app_commands.describe(buds="How many buds you have (use this OR bags)",
                        bags="How many bags you'll sell (use this OR buds)",
                        drug="Drug (default: weed)",
                        level="Level (default: the one saved in /settings)",
-                       bonus="Override your saved bonus for this calc",
+                       gang_block=f"Selling on a gang block? (+{GANG_BLOCK_BONUS}% more, default: no)",
                        wash_skill="Override your saved wash skill for this calc")
 async def plan(i: discord.Interaction,
                buds: app_commands.Range[int, 0, 100_000_000] | None = None,
                bags: app_commands.Range[int, 0, 100_000_000] | None = None,
                drug: app_commands.Choice[str] | None = None,
                level: app_commands.Choice[int] | None = None,
-               bonus: app_commands.Choice[int] | None = None, wash_skill: bool | None = None):
+               gang_block: app_commands.Choice[int] | None = None,
+               wash_skill: bool | None = None):
     if (buds is None) == (bags is None):
         return await i.response.send_message("Give me **either** `buds` **or** `bags` (not both).",
                                              ephemeral=True)
-    s_bonus, s_skill, s_level = get_settings(i.guild_id, i.user.id)
+    s_skill, s_level = get_settings(i.guild_id, i.user.id)
     lvl = level.value if level is not None else s_level
     if lvl is None:
         return await i.response.send_message(
             "I don't know your level yet. Pick a `level` here, or save it once with `/settings`.",
             ephemeral=True)
     drug_name = drug.value if drug is not None else next(iter(RATES))
-    b = bonus.value if bonus is not None else s_bonus
+    on_block = gang_block is not None and gang_block.value == 1
+    b = total_bonus(gang_block)
     skill = s_skill if wash_skill is None else wash_skill
     fee = fee_for(skill)
     lo, hi, est = rate_for(drug_name, lvl)
@@ -208,7 +217,7 @@ async def plan(i: discord.Interaction,
         f"Wash lost: {money(d_avg - c_avg)} avg"))
     e.set_footer(text=(
         f"Per bag: {money(lo * mult)}–{money(hi * mult)} (base {money(lo)}–{money(hi)}) • "
-        f"bonus {b:g}% • wash fee {fee * 100:g}%" + (f" • no exact price set for L{lvl} yet, this is an estimate" if est else "")))
+        f"bonus {b:g}%{' (incl. gang block)' if on_block else ''} • wash fee {fee * 100:g}%" + (f" • no exact price set for L{lvl} yet, this is an estimate" if est else "")))
     await i.response.send_message(embed=e)
 
 
@@ -237,18 +246,20 @@ async def get_log_channel(guild: discord.Guild):
 # ------------------------------------------------------------------ /sell
 @bot.tree.command(description="Log a sale. It's also posted in the sales-log channel")
 @app_commands.guild_only()
-@app_commands.choices(drug=DRUG_CHOICES, level=LEVEL_CHOICES)
+@app_commands.choices(drug=DRUG_CHOICES, level=LEVEL_CHOICES, gang_block=GANG_CHOICES)
 @app_commands.describe(bags="Bags sold",
                        dirty="Optional: exact dirty money you received (blank = average for your level and bonus)",
                        drug="Drug (default: weed)",
                        level="Level sold (default: the one saved in /settings)",
+                       gang_block=f"Did you sell on a gang block? (+{GANG_BLOCK_BONUS}% more, default: no)",
                        wash_skill="Override your saved wash skill", note="Buyer / location / anything")
 async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_000],
                dirty: app_commands.Range[float, 0, 1_000_000_000] | None = None,
                drug: app_commands.Choice[str] | None = None,
                level: app_commands.Choice[int] | None = None,
+               gang_block: app_commands.Choice[int] | None = None,
                wash_skill: bool | None = None, note: str | None = None):
-    s_bonus, s_skill, s_level = get_settings(i.guild_id, i.user.id)
+    s_skill, s_level = get_settings(i.guild_id, i.user.id)
     lvl = level.value if level is not None else s_level
     if lvl is None:
         return await i.response.send_message(
@@ -258,7 +269,9 @@ async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_00
     drug_name = drug.value if drug is not None else next(iter(RATES))
     skill = s_skill if wash_skill is None else wash_skill
     lo, hi, est = rate_for(drug_name, lvl)
-    mult = 1 + s_bonus / 100
+    on_block = gang_block is not None and gang_block.value == 1
+    bonus_pct = total_bonus(gang_block)
+    mult = 1 + bonus_pct / 100
     estimated = dirty is None
     if estimated:  # prices are a random range per bag, so use the average
         dirty = (lo + hi) / 2 * mult * bags
@@ -278,7 +291,8 @@ async def sell(i: discord.Interaction, bags: app_commands.Range[int, 1, 1_000_00
     if estimated:
         e.add_field(name="Possible range", inline=False,
                     value=f"{money(lo * mult * bags)} – {money(hi * mult * bags)} dirty "
-                          f"({s_bonus:g}% bonus included)" + ("\nNo exact price set for this level yet" if est else ""))
+                          f"({bonus_pct:g}% bonus included)" + ("\nNo exact price set for this level yet" if est else ""))
+    e.add_field(name="Location", value=("🏴 Gang block (+%d%%)" % GANG_BLOCK_BONUS) if on_block else "Not a gang block")
     if note:
         e.add_field(name="Note", value=note, inline=False)
     e.timestamp = datetime.now(timezone.utc)

@@ -32,7 +32,7 @@ RECIPES = {
 }
 WASH_FEE = 0.20          # dirty money lost when washing
 WASH_FEE_SKILL = 0.16    # ...with the wash skill
-SKILL_BONUS = 20         # drug selling skill: +% on every sale (same for everyone)
+SKILL_BONUS = 10         # drug selling skill: +% on every sale (same for everyone)
 GANG_BLOCK_BONUS = 10    # extra % added on top when selling on a gang block
 DEFAULT_WASH_SKILL = True  # everyone starts with the (upgraded) wash skill
 LEVELS = (1, 10, 20, 35)  # levels shown in the dropdowns (Discord max 25)

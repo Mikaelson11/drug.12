@@ -164,22 +164,17 @@ async def settings(i: discord.Interaction, level: app_commands.Choice[int] | Non
 @bot.tree.command(description="Buds -> joints -> bags -> dirty & clean money calculator")
 @app_commands.guild_only()
 @app_commands.choices(drug=DRUG_CHOICES, level=LEVEL_CHOICES, gang_block=GANG_CHOICES)
-@app_commands.describe(buds="How many buds you have (use this OR bags)",
-                       bags="How many bags you'll sell (use this OR buds)",
+@app_commands.describe(buds="How many buds you have",
+                       gang_block=f"Selling on a gang block? (+{GANG_BLOCK_BONUS}% more)",
                        drug="Drug (default: weed)",
                        level="Level (default: the one saved in /settings)",
-                       gang_block=f"Selling on a gang block? (+{GANG_BLOCK_BONUS}% more, default: no)",
                        wash_skill="Override your saved wash skill for this calc")
 async def plan(i: discord.Interaction,
-               buds: app_commands.Range[int, 0, 100_000_000] | None = None,
-               bags: app_commands.Range[int, 0, 100_000_000] | None = None,
+               buds: app_commands.Range[int, 1, 100_000_000],
+               gang_block: app_commands.Choice[int],
                drug: app_commands.Choice[str] | None = None,
                level: app_commands.Choice[int] | None = None,
-               gang_block: app_commands.Choice[int] | None = None,
                wash_skill: bool | None = None):
-    if (buds is None) == (bags is None):
-        return await i.response.send_message("Give me **either** `buds` **or** `bags` (not both).",
-                                             ephemeral=True)
     s_skill, s_level = get_settings(i.guild_id, i.user.id)
     lvl = level.value if level is not None else s_level
     if lvl is None:
@@ -187,7 +182,7 @@ async def plan(i: discord.Interaction,
             "I don't know your level yet. Pick a `level` here, or save it once with `/settings`.",
             ephemeral=True)
     drug_name = drug.value if drug is not None else next(iter(RATES))
-    on_block = gang_block is not None and gang_block.value == 1
+    on_block = gang_block.value == 1
     b = total_bonus(gang_block)
     skill = s_skill if wash_skill is None else wash_skill
     fee = fee_for(skill)
@@ -195,16 +190,11 @@ async def plan(i: discord.Interaction,
     bpj, jpb = RECIPES.get(drug_name, (1, 2))
 
     e = discord.Embed(title=f"🧮 {drug_name.title()} L{lvl}", color=0x9b59b6)
-    if buds is not None:
-        joints = buds // bpj
-        n_bags = joints // jpb
-        e.add_field(name="🌿 Crafting", inline=False, value=(
-            f"{buds:,} buds → {joints:,} joints → **{n_bags:,} bags**\n"
-            f"Leftover: {joints % jpb:,} joint(s) + {buds % bpj:,} bud(s)"))
-    else:
-        n_bags = bags
-        e.add_field(name="🌿 Crafting", inline=False, value=(
-            f"{n_bags:,} bags needs {n_bags * jpb:,} joints = **{n_bags * jpb * bpj:,} buds**"))
+    joints = buds // bpj
+    n_bags = joints // jpb
+    e.add_field(name="🌿 Crafting", inline=False, value=(
+        f"{buds:,} buds → {joints:,} joints → **{n_bags:,} bags**\n"
+        f"Leftover: {joints % jpb:,} joint(s) + {buds % bpj:,} bud(s)"))
 
     mult = 1 + b / 100
     d_lo, d_hi = lo * n_bags * mult, hi * n_bags * mult

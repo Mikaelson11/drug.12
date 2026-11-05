@@ -18,6 +18,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "sales.db")
 LOG_CHANNEL_NAME = os.getenv("LOG_CHANNEL_NAME", "sales-log")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")  # optional: force a specific channel
+OWNER_ID = os.getenv("OWNER_ID")  # your Discord user ID; /bulk only works for this person
 
 # ------------------------------------------------------------------ game numbers
 # Edit these to change prices / recipes. Levels you don't list are estimated by
@@ -214,8 +215,24 @@ async def plan(i: discord.Interaction,
     await i.response.send_message(embed=e)
 
 
+# ------------------------------------------------------------------ owner lock
+_owner_cache = None
+
+
+async def is_owner(user) -> bool:
+    """True only for you. Uses OWNER_ID if set, otherwise the owner of the bot application
+    (the Discord account that created the bot in the developer portal)."""
+    global _owner_cache
+    if OWNER_ID and OWNER_ID.strip().isdigit():
+        return user.id == int(OWNER_ID.strip())
+    if _owner_cache is None:
+        info = await bot.application_info()
+        _owner_cache = info.team.owner_id if info.team else info.owner.id
+    return user.id == _owner_cache
+
+
 # ------------------------------------------------------------------ /bulk
-@bot.tree.command(description="Work out a fair discounted bulk price to sell your bags or buds to another player")
+@bot.tree.command(description="(Owner only) Fair discounted bulk price for selling bags or buds to another player")
 @app_commands.guild_only()
 @app_commands.choices(sell_type=SELLTYPE_CHOICES, gang_block=GANG_CHOICES, drug=DRUG_CHOICES,
                       level=LEVEL_CHOICES)
@@ -234,6 +251,8 @@ async def bulk(i: discord.Interaction,
                level: app_commands.Choice[int] | None = None,
                discount: app_commands.Range[float, 0, 100] = BULK_DISCOUNT,
                wash_skill: bool = False):
+    if not await is_owner(i.user):
+        return await i.response.send_message("🔒 This command is private.", ephemeral=True)
     _, s_level = get_settings(i.guild_id, i.user.id)
     lvl = level.value if level is not None else s_level
     if lvl is None:
@@ -274,12 +293,8 @@ async def bulk(i: discord.Interaction,
     e.add_field(name="🧼 After the buyer washes it (clean)", inline=False,
                 value=f"Avg **{money(c_avg)}** ({fee * 100:g}% wash fee)")
 
-    price_dirty = d_avg * keep
     price_clean = c_avg * keep
     unit = "bag" if sell_type.value == "bags" else "bud"
-    e.add_field(name=f"🏷️ Fair price ({discount:g}% off their dirty total)", inline=False,
-                value=f"**{money(price_dirty)}** total • {money(price_dirty / amount)} per {unit}\n"
-                      f"Buyer keeps about {money(d_avg - price_dirty)} dirty for their trouble")
     e.add_field(name=f"🏷️ Fair price ({discount:g}% off their clean total)", inline=False,
                 value=f"**{money(price_clean)}** total • {money(price_clean / amount)} per {unit}\n"
                       f"Buyer keeps about {money(c_avg - price_clean)} clean for their trouble")

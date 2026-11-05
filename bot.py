@@ -35,7 +35,7 @@ WASH_FEE_SKILL = 0.16    # ...with the wash skill
 SKILL_BONUS = 10         # drug selling skill: +% on every sale (same for everyone)
 GANG_BLOCK_BONUS = 10    # extra % added on top when selling on a gang block
 DEFAULT_WASH_SKILL = True  # everyone starts with the (upgraded) wash skill
-BULK_DISCOUNT = 20      # % taken off the buyer's expected total in /bulk (their profit for not growing)
+BULK_DISCOUNT = 35      # % taken off the buyer's expected total in /bulk (their profit for not growing)
 LEVELS = (1, 10, 20, 35)  # levels shown in the dropdowns (Discord max 25)
 
 # ------------------------------------------------------------------ database
@@ -225,7 +225,7 @@ async def plan(i: discord.Interaction,
                        drug="Drug (default: weed)",
                        level="Level of the product (default: the one saved in /settings)",
                        discount=f"% taken off the buyer's total earnings (default {BULK_DISCOUNT}%)",
-                       wash_skill="Does the buyer have the wash skill? (default: your saved setting)")
+                       wash_skill="Does the buyer have the wash skill? (default: No, 20% wash fee)")
 async def bulk(i: discord.Interaction,
                sell_type: app_commands.Choice[str],
                amount: app_commands.Range[int, 1, 100_000_000],
@@ -233,16 +233,15 @@ async def bulk(i: discord.Interaction,
                drug: app_commands.Choice[str] | None = None,
                level: app_commands.Choice[int] | None = None,
                discount: app_commands.Range[float, 0, 100] = BULK_DISCOUNT,
-               wash_skill: bool | None = None):
-    s_skill, s_level = get_settings(i.guild_id, i.user.id)
+               wash_skill: bool = False):
+    _, s_level = get_settings(i.guild_id, i.user.id)
     lvl = level.value if level is not None else s_level
     if lvl is None:
         return await i.response.send_message(
             "I don't know your level yet. Pick a `level` here, or save it once with `/settings`.",
             ephemeral=True)
     drug_name = drug.value if drug is not None else next(iter(RATES))
-    skill = s_skill if wash_skill is None else wash_skill
-    fee = fee_for(skill)
+    fee = fee_for(wash_skill)  # the buyer's skill, not yours: nobody is assumed to have it
     bpj, jpb = RECIPES.get(drug_name, (1, 2))
     lo, hi, est = rate_for(drug_name, lvl)
     on_block = gang_block.value == 1

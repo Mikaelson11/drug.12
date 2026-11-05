@@ -35,6 +35,7 @@ WASH_FEE_SKILL = 0.16    # ...with the wash skill
 SKILL_BONUS = 10         # drug selling skill: +% on every sale (same for everyone)
 GANG_BLOCK_BONUS = 10    # extra % added on top when selling on a gang block
 DEFAULT_WASH_SKILL = True  # everyone starts with the (upgraded) wash skill
+BULK_DISCOUNT = 20      # % taken off the buyer's expected total in /bulk (their profit for not growing)
 LEVELS = (1, 10, 20, 35)  # levels shown in the dropdowns (Discord max 25)
 
 # ------------------------------------------------------------------ database
@@ -124,6 +125,8 @@ DRUG_CHOICES = [app_commands.Choice(name=d.title(), value=d) for d in RATES]
 LEVEL_CHOICES = [app_commands.Choice(name=f"Level {n}", value=n) for n in LEVELS]
 GANG_CHOICES = [app_commands.Choice(name=f"Yes - gang block (+{GANG_BLOCK_BONUS}%)", value=1),
                 app_commands.Choice(name="No - not a gang block", value=0)]
+SELLTYPE_CHOICES = [app_commands.Choice(name="Bags (already packaged)", value="bags"),
+                    app_commands.Choice(name="Buds (raw, buyer crafts them)", value="buds")]
 PERIODS = [app_commands.Choice(name=n, value=v) for n, v in
            [("Today", "today"), ("Last 7 days", "week"),
             ("Last 30 days", "month"), ("All time", "all")]]
@@ -208,6 +211,83 @@ async def plan(i: discord.Interaction,
     e.set_footer(text=(
         f"Per bag: {money(lo * mult)}–{money(hi * mult)} (base {money(lo)}–{money(hi)}) • "
         f"bonus {b:g}%{' (incl. gang block)' if on_block else ''} • wash fee {fee * 100:g}%" + (f" • no exact price set for L{lvl} yet, this is an estimate" if est else "")))
+    await i.response.send_message(embed=e)
+
+
+# ------------------------------------------------------------------ /bulk
+@bot.tree.command(description="Work out a fair discounted bulk price to sell your bags or buds to another player")
+@app_commands.guild_only()
+@app_commands.choices(sell_type=SELLTYPE_CHOICES, gang_block=GANG_CHOICES, drug=DRUG_CHOICES,
+                      level=LEVEL_CHOICES)
+@app_commands.describe(sell_type="Are you selling BAGS or BUDS?",
+                       amount="How many bags / buds you're selling",
+                       gang_block=f"Will the buyer sell on a gang block? (+{GANG_BLOCK_BONUS}% for them)",
+                       drug="Drug (default: weed)",
+                       level="Level of the product (default: the one saved in /settings)",
+                       discount=f"% taken off the buyer's total earnings (default {BULK_DISCOUNT}%)",
+                       wash_skill="Does the buyer have the wash skill? (default: your saved setting)")
+async def bulk(i: discord.Interaction,
+               sell_type: app_commands.Choice[str],
+               amount: app_commands.Range[int, 1, 100_000_000],
+               gang_block: app_commands.Choice[int],
+               drug: app_commands.Choice[str] | None = None,
+               level: app_commands.Choice[int] | None = None,
+               discount: app_commands.Range[float, 0, 100] = BULK_DISCOUNT,
+               wash_skill: bool | None = None):
+    s_skill, s_level = get_settings(i.guild_id, i.user.id)
+    lvl = level.value if level is not None else s_level
+    if lvl is None:
+        return await i.response.send_message(
+            "I don't know your level yet. Pick a `level` here, or save it once with `/settings`.",
+            ephemeral=True)
+    drug_name = drug.value if drug is not None else next(iter(RATES))
+    skill = s_skill if wash_skill is None else wash_skill
+    fee = fee_for(skill)
+    bpj, jpb = RECIPES.get(drug_name, (1, 2))
+    lo, hi, est = rate_for(drug_name, lvl)
+    on_block = gang_block.value == 1
+    b = total_bonus(gang_block)
+    mult = 1 + b / 100
+    keep = 1 - discount / 100
+
+    e = discord.Embed(title=f"📦 Bulk deal: {amount:,} {sell_type.value} of {drug_name.title()} L{lvl}",
+                      color=0x1abc9c)
+    if sell_type.value == "buds":
+        joints = amount // bpj
+        n_bags = joints // jpb
+        left_joints, left_buds = joints % jpb, amount % bpj
+        crafted = f"{amount:,} buds → {joints:,} joints → **{n_bags:,} bags**"
+        if left_joints or left_buds:
+            crafted += f"\n(leftover {left_joints:,} joint(s) + {left_buds:,} bud(s) can't be sold)"
+        e.add_field(name="🌿 What the buyer can make", inline=False, value=crafted)
+    else:
+        n_bags = amount
+
+    if n_bags < 1:
+        return await i.response.send_message(
+            f"{amount:,} {sell_type.value} isn't enough to make even 1 bag.", ephemeral=True)
+
+    d_lo, d_hi = lo * mult * n_bags, hi * mult * n_bags
+    d_avg = (d_lo + d_hi) / 2
+    c_avg = d_avg * (1 - fee)
+    e.add_field(name="💵 Buyer's total sales (dirty)", inline=False,
+                value=f"Avg **{money(d_avg)}** (range {money(d_lo)} – {money(d_hi)})")
+    e.add_field(name="🧼 After the buyer washes it (clean)", inline=False,
+                value=f"Avg **{money(c_avg)}** ({fee * 100:g}% wash fee)")
+
+    price_dirty = d_avg * keep
+    price_clean = c_avg * keep
+    unit = "bag" if sell_type.value == "bags" else "bud"
+    e.add_field(name=f"🏷️ Fair price ({discount:g}% off their dirty total)", inline=False,
+                value=f"**{money(price_dirty)}** total • {money(price_dirty / amount)} per {unit}\n"
+                      f"Buyer keeps about {money(d_avg - price_dirty)} dirty for their trouble")
+    e.add_field(name=f"🏷️ Fair price ({discount:g}% off their clean total)", inline=False,
+                value=f"**{money(price_clean)}** total • {money(price_clean / amount)} per {unit}\n"
+                      f"Buyer keeps about {money(c_avg - price_clean)} clean for their trouble")
+    e.set_footer(text=(
+        f"Based on the average of ${lo * mult:,.0f}–${hi * mult:,.0f} per bag "
+        f"(bonus {b:g}%{' incl. gang block' if on_block else ''})"
+        + (f" • no exact price set for L{lvl} yet, this is an estimate" if est else "")))
     await i.response.send_message(embed=e)
 
 

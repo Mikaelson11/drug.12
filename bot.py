@@ -126,6 +126,8 @@ DRUG_CHOICES = [app_commands.Choice(name=d.title(), value=d) for d in RATES]
 LEVEL_CHOICES = [app_commands.Choice(name=f"Level {n}", value=n) for n in LEVELS]
 GANG_CHOICES = [app_commands.Choice(name=f"Yes - gang block (+{GANG_BLOCK_BONUS}%)", value=1),
                 app_commands.Choice(name="No - not a gang block", value=0)]
+HAVE_CHOICES = [app_commands.Choice(name="Buds (show bags and money)", value="buds"),
+                app_commands.Choice(name="Bags (show buds needed and money)", value="bags")]
 SELLTYPE_CHOICES = [app_commands.Choice(name="Bags (already packaged)", value="bags"),
                     app_commands.Choice(name="Buds (raw, buyer crafts them)", value="buds")]
 PERIODS = [app_commands.Choice(name=n, value=v) for n, v in
@@ -167,14 +169,16 @@ async def settings(i: discord.Interaction, level: app_commands.Choice[int] | Non
 # ------------------------------------------------------------------ /plan
 @bot.tree.command(description="Buds -> joints -> bags -> dirty & clean money calculator")
 @app_commands.guild_only()
-@app_commands.choices(drug=DRUG_CHOICES, level=LEVEL_CHOICES, gang_block=GANG_CHOICES)
-@app_commands.describe(buds="How many buds you have",
+@app_commands.choices(have=HAVE_CHOICES, drug=DRUG_CHOICES, level=LEVEL_CHOICES, gang_block=GANG_CHOICES)
+@app_commands.describe(have="Do you want to calculate from BUDS or BAGS?",
+                       amount="How many buds / bags",
                        gang_block=f"Selling on a gang block? (+{GANG_BLOCK_BONUS}% more)",
                        drug="Drug (default: weed)",
                        level="Level (default: the one saved in /settings)",
                        wash_skill="Override your saved wash skill for this calc")
 async def plan(i: discord.Interaction,
-               buds: app_commands.Range[int, 1, 100_000_000],
+               have: app_commands.Choice[str],
+               amount: app_commands.Range[int, 1, 100_000_000],
                gang_block: app_commands.Choice[int],
                drug: app_commands.Choice[str] | None = None,
                level: app_commands.Choice[int] | None = None,
@@ -194,11 +198,16 @@ async def plan(i: discord.Interaction,
     bpj, jpb = RECIPES.get(drug_name, (1, 2))
 
     e = discord.Embed(title=f"🧮 {drug_name.title()} L{lvl}", color=0x9b59b6)
-    joints = buds // bpj
-    n_bags = joints // jpb
-    e.add_field(name="🌿 Crafting", inline=False, value=(
-        f"{buds:,} buds → {joints:,} joints → **{n_bags:,} bags**\n"
-        f"Leftover: {joints % jpb:,} joint(s) + {buds % bpj:,} bud(s)"))
+    if have.value == "buds":
+        joints = amount // bpj
+        n_bags = joints // jpb
+        e.add_field(name="🌿 Crafting", inline=False, value=(
+            f"{amount:,} buds → {joints:,} joints → **{n_bags:,} bags**\n"
+            f"Leftover: {joints % jpb:,} joint(s) + {amount % bpj:,} bud(s)"))
+    else:
+        n_bags = amount
+        e.add_field(name="🌿 Crafting", inline=False, value=(
+            f"{n_bags:,} bags needs {n_bags * jpb:,} joints = **{n_bags * jpb * bpj:,} buds**"))
 
     mult = 1 + b / 100
     d_lo, d_hi = lo * n_bags * mult, hi * n_bags * mult

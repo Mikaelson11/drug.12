@@ -122,17 +122,19 @@ def total_bonus(gang_block) -> int:
     return SKILL_BONUS + (GANG_BLOCK_BONUS if gang_block is not None and gang_block.value else 0)
 
 
-DRUG_CHOICES = [app_commands.Choice(name=d.title(), value=d) for d in RATES]
-LEVEL_CHOICES = [app_commands.Choice(name=f"Level {n}", value=n) for n in LEVELS]
-GANG_CHOICES = [app_commands.Choice(name=f"Yes - gang block (+{GANG_BLOCK_BONUS}%)", value=1),
-                app_commands.Choice(name="No - not a gang block", value=0)]
-HAVE_CHOICES = [app_commands.Choice(name="Buds (show bags and money)", value="buds"),
-                app_commands.Choice(name="Bags (show buds needed and money)", value="bags")]
-SELLTYPE_CHOICES = [app_commands.Choice(name="Bags (already packaged)", value="bags"),
-                    app_commands.Choice(name="Buds (raw, buyer crafts them)", value="buds")]
+DRUG_EMOJI = {"weed": "🌿"}
+LEVEL_EMOJI = {1: "🌱", 10: "🌿", 20: "🍀", 35: "🔥", 50: "👑"}
+DRUG_CHOICES = [app_commands.Choice(name=f"{DRUG_EMOJI.get(d, '💊')} {d.title()}", value=d) for d in RATES]
+LEVEL_CHOICES = [app_commands.Choice(name=f"{LEVEL_EMOJI.get(n, '⭐')} Level {n}", value=n) for n in LEVELS]
+GANG_CHOICES = [app_commands.Choice(name=f"🏴 YES - gang block (+{GANG_BLOCK_BONUS}%)", value=1),
+                app_commands.Choice(name="🚫 NO - not a gang block", value=0)]
+HAVE_CHOICES = [app_commands.Choice(name="🌿 BUDS (show bags and money)", value="buds"),
+                app_commands.Choice(name="🛍️ BAGS (show buds needed and money)", value="bags")]
+SELLTYPE_CHOICES = [app_commands.Choice(name="🛍️ BAGS (already packaged)", value="bags"),
+                    app_commands.Choice(name="🌿 BUDS (raw, buyer crafts them)", value="buds")]
 PERIODS = [app_commands.Choice(name=n, value=v) for n, v in
-           [("Today", "today"), ("Last 7 days", "week"),
-            ("Last 30 days", "month"), ("All time", "all")]]
+           [("📅 Today", "today"), ("🗓️ Last 7 days", "week"),
+            ("📆 Last 30 days", "month"), ("♾️ All time", "all")]]
 
 
 class Bot(discord.Client):

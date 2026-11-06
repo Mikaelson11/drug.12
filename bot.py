@@ -26,7 +26,7 @@ OWNER_ID = os.getenv("OWNER_ID")  # your Discord user ID; /bulk only works for t
 #   RATES   = {drug: {level: (min price per bag, max price per bag)}}
 #   RECIPES = {drug: (buds per joint, joints per bag)}
 RATES = {
-    "weed": {1: (648, 852), 10: (780, 1006), 20: (924, 1176)},
+    "weed": {1: (648, 852), 10: (780, 1006), 20: (924, 1176), 35: (1092, 1380)},
 }
 RECIPES = {
     "weed": (1, 2),
@@ -37,7 +37,7 @@ SKILL_BONUS = 10         # drug selling skill: +% on every sale (same for everyo
 GANG_BLOCK_BONUS = 10    # extra % added on top when selling on a gang block
 DEFAULT_WASH_SKILL = True  # everyone starts with the (upgraded) wash skill
 BULK_DISCOUNT = 35      # % taken off the buyer's expected total in /bulk (their profit for not growing)
-LEVELS = (1, 10, 20, 35)  # levels shown in the dropdowns (Discord max 25)
+LEVELS = (1, 10, 20, 35, 50)  # levels shown in the dropdowns (Discord max 25)
 
 # ------------------------------------------------------------------ database
 db = sqlite3.connect(DB_PATH)

@@ -1,6 +1,6 @@
 """
 MWRP Sales Bot
-Commands: /plan  /sell  /leaderboard  /settings
+Commands: /plan  /sell  /leaderboard  /settings  /bulk (owner)  /autorole (admin)
 Every /sell is also posted to a #sales-log channel.
 All money values are in-game dollars.
 """
@@ -54,6 +54,9 @@ db.executescript(
         unit_price REAL    NOT NULL,   -- dirty money per bag
         note       TEXT,
         ts         INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auto_role (
+        guild_id INTEGER PRIMARY KEY, role_id INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS user_settings (
         guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
@@ -139,7 +142,9 @@ PERIODS = [app_commands.Choice(name=n, value=v) for n, v in
 
 class Bot(discord.Client):
     def __init__(self):
-        super().__init__(intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        intents.members = True  # needed to see new members joining (auto-role)
+        super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
@@ -440,6 +445,67 @@ async def leaderboard(i: discord.Interaction, period: app_commands.Choice[str] |
     await i.response.send_message(embed=e)
 
 
+# ------------------------------------------------------------------ /autorole
+def role_problem(guild: discord.Guild, role) -> str | None:
+    """Why the bot can't hand out this role, or None if it can."""
+    me = guild.me
+    if role.is_default():
+        return "That's @everyone, which everybody already has."
+    if role.managed:
+        return "That role is managed by a bot or integration, so it can't be handed out."
+    if not me.guild_permissions.manage_roles:
+        return "I don't have the **Manage Roles** permission. Give it to my role in Server Settings → Roles."
+    if role >= me.top_role:
+        return (f"My role isn't above {role.mention}. In Server Settings → Roles, drag my role "
+                f"(the bot's name) **above** {role.mention}.")
+    return None
+
+
+@bot.tree.command(description="Set the role new members get automatically when they join (leave blank to turn off)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_roles=True)
+@app_commands.describe(role="Role to give every new member (leave empty to turn auto-role off)")
+async def autorole(i: discord.Interaction, role: discord.Role | None = None):
+    if not i.user.guild_permissions.manage_roles:
+        return await i.response.send_message("🔒 You need the Manage Roles permission to use this.",
+                                             ephemeral=True)
+    if role is None:
+        db.execute("DELETE FROM auto_role WHERE guild_id=?", (i.guild_id,))
+        db.commit()
+        return await i.response.send_message("Auto-role turned **off**. New members won't get a role.",
+                                             ephemeral=True)
+    problem = role_problem(i.guild, role)
+    if problem and (role.is_default() or role.managed):  # can never work, so don't save it
+        return await i.response.send_message(problem, ephemeral=True)
+    db.execute("INSERT INTO auto_role(guild_id, role_id) VALUES (?,?) "
+               "ON CONFLICT(guild_id) DO UPDATE SET role_id=excluded.role_id", (i.guild_id, role.id))
+    db.commit()
+    msg = f"✅ Every new member will now get {role.mention} when they join."
+    if problem:
+        msg += f"\n⚠️ Saved, but it won't work yet: {problem}"
+    await i.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    row = db.execute("SELECT role_id FROM auto_role WHERE guild_id=?", (member.guild.id,)).fetchone()
+    if not row or member.bot:
+        return
+    role = member.guild.get_role(row["role_id"])
+    if role is None:
+        print(f"[{member.guild.name}] auto-role: the saved role no longer exists, run /autorole again")
+        return
+    problem = role_problem(member.guild, role)
+    if problem:
+        print(f"[{member.guild.name}] auto-role can't give @{role.name} to {member}: {problem}")
+        return
+    try:
+        await member.add_roles(role, reason="Auto-role on join")
+        print(f"[{member.guild.name}] gave @{role.name} to {member}")
+    except discord.HTTPException as exc:
+        print(f"[{member.guild.name}] auto-role failed for {member}: {exc}")
+
+
 async def ensure_log_channel(guild: discord.Guild):
     ch = await get_log_channel(guild)
     if ch:
@@ -464,4 +530,10 @@ async def on_guild_join(guild: discord.Guild):
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("Set DISCORD_TOKEN in your .env file or your host's environment variables.")
-    bot.run(TOKEN)
+    try:
+        bot.run(TOKEN)
+    except discord.PrivilegedIntentsRequired:
+        raise SystemExit(
+            "The bot needs the SERVER MEMBERS INTENT for auto-role. Turn it on at "
+            "https://discord.com/developers/applications -> your app -> Bot -> Privileged Gateway "
+            "Intents -> SERVER MEMBERS INTENT, save, then start the bot again.")

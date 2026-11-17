@@ -36,6 +36,7 @@ WASH_FEE_SKILL = 0.16    # ...with the wash skill
 SKILL_BONUS = 10         # drug selling skill: +% on every sale (same for everyone)
 GANG_BLOCK_BONUS = 10    # extra % added on top when selling on a gang block
 DEFAULT_WASH_SKILL = True  # everyone starts with the (upgraded) wash skill
+BULK_ROLE_NAME = "/bulk"  # members with a role by this name can use /bulk (besides the owner)
 BULK_DISCOUNT = 35      # % taken off the buyer's expected total in /bulk (their profit for not growing)
 LEVELS = (1, 10, 20, 35, 50)  # levels shown in the dropdowns (Discord max 25)
 
@@ -247,8 +248,18 @@ async def is_owner(user) -> bool:
     return user.id == _owner_cache
 
 
+def has_bulk_role(user) -> bool:
+    """True if the member has a role named '/bulk' (matched ignoring case and a leading slash)."""
+    want = BULK_ROLE_NAME.lower().lstrip("/")
+    return any(r.name.lower().lstrip("/") == want for r in getattr(user, "roles", []))
+
+
+async def can_use_bulk(user) -> bool:
+    return has_bulk_role(user) or await is_owner(user)
+
+
 # ------------------------------------------------------------------ /bulk
-@bot.tree.command(description="(Owner only) Fair discounted bulk price for selling bags or buds to another player")
+@bot.tree.command(description="(Restricted) Fair discounted bulk price for selling bags or buds to another player")
 @app_commands.guild_only()
 @app_commands.choices(sell_type=SELLTYPE_CHOICES, gang_block=GANG_CHOICES, drug=DRUG_CHOICES,
                       level=LEVEL_CHOICES)
@@ -267,7 +278,7 @@ async def bulk(i: discord.Interaction,
                level: app_commands.Choice[int] | None = None,
                discount: app_commands.Range[float, 0, 100] = BULK_DISCOUNT,
                wash_skill: bool = False):
-    if not await is_owner(i.user):
+    if not await can_use_bulk(i.user):
         return await i.response.send_message("🔒 This command is private.", ephemeral=True)
     _, s_level = get_settings(i.guild_id, i.user.id)
     lvl = level.value if level is not None else s_level

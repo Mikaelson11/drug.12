@@ -26,7 +26,7 @@ OWNER_ID = os.getenv("OWNER_ID")  # your Discord user ID; /bulk only works for t
 #   RATES   = {drug: {level: (min price per bag, max price per bag)}}
 #   RECIPES = {drug: (buds per joint, joints per bag)}
 RATES = {
-    "weed": {1: (648, 852), 10: (780, 1006), 20: (924, 1176), 35: (1092, 1380)},
+    "weed": {1: (648, 852), 10: (780, 1006), 20: (924, 1176), 35: (1092, 1380), 50: (1260, 1584)},
 }
 RECIPES = {
     "weed": (1, 2),
